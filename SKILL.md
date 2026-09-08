@@ -37,7 +37,12 @@ Full-power debugger with `!analyze -v` and heap inspection. Two ways to get it:
 
 ### Analysis script
 
-`analyze_dump.py` — wrapper that parses a dump and outputs exception code, thread info, module list, and key module checks.
+`analyze_dump.py` — parses a dump and prints the exception code/address, the loaded module executing at the crash address (name + offset), thread info, and the full module list. Run it first thing on any dump.
+
+### Companion scripts (this repo)
+
+- `fix_sys32_rename.ps1` / `fix_sys32_crt.ps1` — the root-cause fix for Pattern 1: replace the WRP-stuck System32 CRT DLLs. The rename variant swaps them while in use (no reboot).
+- `find_lock.ps1` — when a DLL cannot be replaced, show which running process has it loaded/locked.
 
 ### Detection: Environment check
 
@@ -178,6 +183,15 @@ The reason: Windows build 26200 (an Insider dev build) treats these legacy DLLs 
 | concrt140.dll | 14.0.24215.1 (OLD) | WRP protected |
 | vcruntime140_1.dll | 14.44.35211.0 (OK) | New file, not in WRP list |
 
+**Root-cause fix (recommended) — replace the WRP-stuck System32 copies:**
+
+Every affected app loads its CRT from System32, so updating those three DLLs there fixes all of them at once. Two scripts ship with this repo:
+
+- `fix_sys32_rename.ps1` — **preferred**. Windows lets you rename a memory-mapped image (image sections are opened with `FILE_SHARE_DELETE`), so the script renames the live DLL to `<name>.<oldversion>.old` and moves a staged newer copy into place. Works while the DLLs are in use — **no reboot**. Verified on build 26200.
+- `fix_sys32_crt.ps1` — takeown + icacls + direct overwrite; any DLL that stays old (still in use) is queued via `PendingFileRenameOperations` and replaced at next boot.
+
+Both auto-detect a source of newer DLLs from the Edge WebView2 WinSxS component and back up the originals to `sys32_crt_backup\`. Without Edge/WebView2, extract from the redist with `vc_redist.x64.exe /x <dir>`. Requires an elevated shell. Only apply when diagnosis confirms the version gap (registry 14.44.x, disk 14.0.24215.1).
+
 **Fix — CWD-based DLL redirection (avoids PoD5/anti-tamper):**
 
 When the target application has anti-tamper that blocks extra DLLs in its directory (like PoD5 in 100% Orange Juice), use this approach:
@@ -268,7 +282,16 @@ python3 analyze_dump.py path/to/crash.dmp
 
 It outputs: exception code and details, crash type (NULL pointer, etc.), system info, loaded modules, thread list, and key module checks.
 
-If the script doesn't exist yet, create it at the workspace root using the template pattern: parse with `MinidumpFile.parse(path)`, read `md.exception`, `md.modules.modules`, `md.threads.threads`, `md.sysinfo`.
+The script now lives at the repo root ([source](./analyze_dump.py)). Besides the raw fields it resolves the exception address to the containing module name + offset, so step 2's manual cross-reference is automated.
+
+Companion automation scripts (see Tools): `fix_sys32_rename.ps1`, `fix_sys32_crt.ps1` (Pattern 1 root-cause fix), `find_lock.ps1` (find which process holds a DLL).
+
+## Practical Tips
+
+- **Cap WER dump retention** so `LocalDumps` doesn't fill the disk with crash dumps:
+  ```
+  reg add "HKLM\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps" /v DumpCount /t REG_DWORD /d 3 /f
+  ```
 
 ## Environment Support
 
